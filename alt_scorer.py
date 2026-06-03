@@ -31,6 +31,21 @@ class ScoredCoin:
     narrative_label:    str = ""
     score_breakdown:    dict = field(default_factory=dict)
 
+    # ── Entry condition (giống BTC module) ───────────────────
+    wait_for_level:   bool  = False
+    entry_condition:  str   = ""
+    entry_zone_low:   float = 0.0
+    entry_zone_high:  float = 0.0
+    # ── Target giá cụ thể ────────────────────────────────────
+    target_1:         float = 0.0   # conservative target ($)
+    target_2:         float = 0.0   # mid target ($)
+    target_3:         float = 0.0   # bull case target ($)
+    target_1_pct:     float = 0.0   # % upside T1
+    target_2_pct:     float = 0.0   # % upside T2
+    target_3_pct:     float = 0.0   # % upside T3
+    support_zone:     float = 0.0   # support gần nhất ($)
+    resistance_zone:  float = 0.0   # resistance gần nhất ($)
+
 
 # ── 1. Narrative (25đ) ───────────────────────────────────────
 
@@ -234,9 +249,102 @@ def score_coin(coin: CoinData) -> ScoredCoin:
     return sc
 
 
-def score_all(coins: list[CoinData]) -> list[ScoredCoin]:
+# ════════════════════════════════════════════════════════════
+#  ENTRY ZONE + TARGET CALCULATOR
+# ════════════════════════════════════════════════════════════
+
+def calculate_entry_and_targets(sc: "ScoredCoin") -> "ScoredCoin":
+    """
+    Tính entry zone và target giá cụ thể cho từng coin.
+    Logic giống BTC module:
+      - Giá đang yếu ngắn hạn → wait_for_level = True
+      - Entry zone = vùng support phía dưới
+      - Target dựa trên market cap upside và % gain lịch sử narrative
+    """
+    coin  = sc.coin
+    price = coin.price
+    if price <= 0:
+        return sc
+
+    # ── Short-term weakness (giống BTC) ──────────────────────
+    short_term_weak = (
+        coin.change_24h < -3.0
+        or (coin.change_7d < -5.0 and coin.volume_spike < 1.2)
+        or coin.change_24h < -1.5 and coin.change_7d < 0
+    )
+
+    # ── Support / Resistance zones từ % move ─────────────────
+    # Support: dựa vào pullback % từ 30D high
+    # Nếu 30D change > 0: support = current price * (1 - 30D_gain * 0.382)
+    # Nếu 30D change < 0: support = current price * 0.93 (gần nhất)
+    if coin.change_30d > 10:
+        pullback_pct   = coin.change_30d / 100 * 0.382   # Fibonacci 38.2%
+        sc.support_zone     = round(price * (1 - pullback_pct), 6)
+        sc.resistance_zone  = round(price * (1 + coin.change_30d / 100 * 0.236), 6)
+    else:
+        sc.support_zone     = round(price * 0.92, 6)
+        sc.resistance_zone  = round(price * 1.08, 6)
+
+    # ── Entry zone ────────────────────────────────────────────
+    if short_term_weak:
+        sc.wait_for_level  = True
+        sc.entry_zone_low  = round(sc.support_zone * 0.97, 6)
+        sc.entry_zone_high = round(sc.support_zone * 1.02, 6)
+        sc.entry_condition = (
+            f"Chờ giá về vùng ${sc.entry_zone_low:,.4f}–${sc.entry_zone_high:,.4f} "
+            f"và có nến xác nhận trước khi vào"
+        )
+    else:
+        sc.wait_for_level  = False
+        sc.entry_zone_low  = round(price * 0.96, 6)
+        sc.entry_zone_high = round(price * 1.02, 6)
+        sc.entry_condition = (
+            f"Có thể DCA từng phần tại vùng ${sc.entry_zone_low:,.4f}–${price:,.4f}"
+        )
+
+    # ── Targets dựa trên market cap upside tiềm năng ──────────
+    # Logic: target được tính từ việc coin đạt market cap của tier cao hơn
+    # Ví dụ: coin $500M MC → T1 khi đạt $1B, T2 khi đạt $2B, T3 khi đạt $5B
+    # Điều chỉnh thêm theo score để target realistic hơn
+    mc_b = coin.market_cap / 1e9
+
+    # Reference market caps của các tier (tỷ USD)
+    # Small: 0.1-0.5B | Mid: 0.5-2B | Large-mid: 2-10B | Large: 10B+
+    if mc_b < 0.2:
+        # Micro/small cap — upside lớn nếu vào đúng narrative
+        tier_targets = [mc_b * 3, mc_b * 6, mc_b * 12]
+    elif mc_b < 0.5:
+        tier_targets = [mc_b * 2.5, mc_b * 5, mc_b * 10]
+    elif mc_b < 2.0:
+        # Small-mid: target tier cao hơn
+        tier_targets = [mc_b * 2.0, mc_b * 4.0, mc_b * 7.0]
+    elif mc_b < 5.0:
+        tier_targets = [mc_b * 1.6, mc_b * 2.5, mc_b * 4.5]
+    elif mc_b < 15.0:
+        tier_targets = [mc_b * 1.3, mc_b * 2.0, mc_b * 3.5]
+    else:
+        # Large cap — upside hạn chế hơn
+        tier_targets = [mc_b * 1.2, mc_b * 1.6, mc_b * 2.5]
+
+    # Convert MC target → price target
+    # price_target = current_price * (target_mc / current_mc)
+    sc.target_1 = round(price * (tier_targets[0] / mc_b), 6)
+    sc.target_2 = round(price * (tier_targets[1] / mc_b), 6)
+    sc.target_3 = round(price * (tier_targets[2] / mc_b), 6)
+
+    # Thêm % upside vào để dễ đọc
+    sc.target_1_pct = round((tier_targets[0] / mc_b - 1) * 100, 0)
+    sc.target_2_pct = round((tier_targets[1] / mc_b - 1) * 100, 0)
+    sc.target_3_pct = round((tier_targets[2] / mc_b - 1) * 100, 0)
+
+    return sc
+
+
+def score_all(coins: list) -> list:
     """Chấm điểm toàn bộ list, sort theo score giảm dần."""
     print(f"[Scorer] Chấm điểm {len(coins)} coin...")
     scored = [score_coin(c) for c in coins]
+    # Tính entry zone và target cho từng coin
+    scored = [calculate_entry_and_targets(s) for s in scored]
     scored.sort(key=lambda x: x.total_score, reverse=True)
     return scored

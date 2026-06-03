@@ -5,3 +5,7 @@ requests
 yfinance
 openai
 schedule
+psycopg2-binary
+anthropic
+google-generativeai
+groq

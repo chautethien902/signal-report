@@ -475,11 +475,10 @@ def generate_scenario_analysis(a: BTCAnalysis, openai_api_key: str = "") -> BTCA
     """
     import os, json
 
-    # ── Fallback nếu không có key ─────────────────────────────
-    if not openai_api_key or not openai_api_key.startswith("sk-"):
-        openai_api_key = os.environ.get("OPENAI_API_KEY", "")
-
-    if not openai_api_key.startswith("sk-"):
+    # ── Kiểm tra có LLM key không ────────────────────────────
+    import llm_client
+    if llm_client.get_provider() == "none":
+        print("[BTC Scenario] Không có LLM key — dùng fallback")
         return _fallback_scenario(a)
 
     # ── Build prompt ─────────────────────────────────────────
@@ -517,15 +516,9 @@ Phong cách: thực tế, nêu vùng giá cụ thể ($), không nói chung chun
 """.strip()
 
     try:
-        from openai import OpenAI
-        client   = OpenAI(api_key=openai_api_key)
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.4,
-            max_tokens=600,
-        )
-        raw = response.choices[0].message.content.strip()
+        import llm_client
+        raw = llm_client.call_llm(prompt, max_tokens=600, temperature=0.4)
+        raw = raw.strip()
         if "```json" in raw:
             raw = raw.split("```json")[1].split("```")[0].strip()
         elif "```" in raw:
