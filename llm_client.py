@@ -110,7 +110,7 @@ def _call_groq(prompt: str, max_tokens: int, temperature: float) -> str:
     key = _get_keys()["groq"]
     client = Groq(api_key=key)
     resp = client.chat.completions.create(
-        model="llama-3.1-70b-versatile",
+        model="llama-3.3-70b-versatile",
         messages=[{"role": "user", "content": prompt}],
         temperature=temperature,
         max_tokens=max_tokens,
