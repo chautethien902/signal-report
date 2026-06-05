@@ -496,3 +496,160 @@ if __name__ == "__main__":
     init_db()
     print("DB initialized OK")
     print("Mode:", "PostgreSQL/Supabase" if USE_POSTGRES else "SQLite local")
+
+
+# ════════════════════════════════════════════════════════════
+#  DB CLEANUP — chỉ giữ N scan gần nhất
+# ════════════════════════════════════════════════════════════
+
+def cleanup_old_scans(keep_last_n: int = 2):
+    """
+    Xóa alt_scans cũ, chỉ giữ lại N scan gần nhất.
+    Cascade xóa luôn alt_results và coin_score_history liên quan.
+    Gọi sau mỗi lần save_alt_scan().
+    """
+    conn = get_conn()
+    c    = conn.cursor()
+
+    if USE_POSTGRES:
+        # Lấy ID cần giữ lại
+        c.execute(f"""
+            SELECT id FROM alt_scans
+            ORDER BY created_at DESC
+            LIMIT %s
+        """, (keep_last_n,))
+    else:
+        c.execute(f"""
+            SELECT id FROM alt_scans
+            ORDER BY created_at DESC
+            LIMIT ?
+        """, (keep_last_n,))
+
+    keep_ids = [r["id"] if isinstance(r, dict) else r[0] for r in c.fetchall()]
+
+    if not keep_ids:
+        conn.close()
+        return 0
+
+    # Xóa alt_results của scan cũ
+    if USE_POSTGRES:
+        placeholders = ",".join(["%s"] * len(keep_ids))
+        c.execute(f"DELETE FROM alt_results WHERE scan_id NOT IN ({placeholders})", keep_ids)
+        deleted_results = c.rowcount
+        c.execute(f"DELETE FROM alt_scans WHERE id NOT IN ({placeholders})", keep_ids)
+        deleted_scans = c.rowcount
+        # Xóa coin_score_history cũ hơn 7 ngày để tiết kiệm storage
+        c.execute("""
+            DELETE FROM coin_score_history
+            WHERE created_at < NOW() - INTERVAL '7 days'
+        """)
+        deleted_history = c.rowcount
+    else:
+        placeholders = ",".join(["?"] * len(keep_ids))
+        c.execute(f"DELETE FROM alt_results WHERE scan_id NOT IN ({placeholders})", keep_ids)
+        deleted_results = c.rowcount
+        c.execute(f"DELETE FROM alt_scans WHERE id NOT IN ({placeholders})", keep_ids)
+        deleted_scans = c.rowcount
+        c.execute("""
+            DELETE FROM coin_score_history
+            WHERE created_at < datetime('now', '-7 days')
+        """)
+        deleted_history = c.rowcount
+
+    # Giữ btc_history 30 ngày gần nhất
+    if USE_POSTGRES:
+        c.execute("""
+            DELETE FROM btc_history
+            WHERE created_at < NOW() - INTERVAL '30 days'
+        """)
+    else:
+        c.execute("""
+            DELETE FROM btc_history
+            WHERE created_at < datetime('now', '-30 days')
+        """)
+    deleted_btc = c.rowcount
+
+    conn.commit()
+    conn.close()
+
+    total = deleted_scans + deleted_results + deleted_history + deleted_btc
+    if total > 0:
+        print(f"[DB Cleanup] Đã xóa: {deleted_scans} scans, "
+              f"{deleted_results} results, {deleted_history} history, "
+              f"{deleted_btc} btc records")
+    return total
+
+
+def get_db_stats() -> dict:
+    """Thống kê dung lượng DB — dùng để monitor."""
+    conn = get_conn()
+    c    = conn.cursor()
+    stats = {}
+    for table in ["btc_history", "alt_scans", "alt_results", "coin_score_history"]:
+        if USE_POSTGRES:
+            c.execute(f"SELECT COUNT(*) as cnt FROM {table}")
+        else:
+            c.execute(f"SELECT COUNT(*) as cnt FROM {table}")
+        row = c.fetchone()
+        stats[table] = row["cnt"] if isinstance(row, dict) else row[0]
+    conn.close()
+    return stats
+
+
+def save_btc_key_levels(price: float, resistance: float, support: float):
+    """Lưu key levels BTC để dùng cho smart alert."""
+    conn = get_conn()
+    c    = conn.cursor()
+    if USE_POSTGRES:
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS btc_key_levels (
+                id          SERIAL PRIMARY KEY,
+                price       DOUBLE PRECISION,
+                resistance  DOUBLE PRECISION,
+                support     DOUBLE PRECISION,
+                created_at  TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+        c.execute("""
+            INSERT INTO btc_key_levels (price, resistance, support)
+            VALUES (%s, %s, %s)
+        """, (price, resistance, support))
+    else:
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS btc_key_levels (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                price       REAL,
+                resistance  REAL,
+                support     REAL,
+                created_at  TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        c.execute("""
+            INSERT INTO btc_key_levels (price, resistance, support)
+            VALUES (?,?,?)
+        """, (price, resistance, support))
+    conn.commit()
+    conn.close()
+
+
+def get_last_btc_key_levels() -> dict | None:
+    """Lấy key levels từ lần phân tích trước."""
+    conn = get_conn()
+    c    = conn.cursor()
+    try:
+        if USE_POSTGRES:
+            c.execute("""
+                SELECT * FROM btc_key_levels
+                ORDER BY created_at DESC LIMIT 1
+            """)
+        else:
+            c.execute("""
+                SELECT * FROM btc_key_levels
+                ORDER BY created_at DESC LIMIT 1
+            """)
+        row = c.fetchone()
+        conn.close()
+        return _one_to_dict(row)
+    except:
+        conn.close()
+        return None

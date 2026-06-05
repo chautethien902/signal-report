@@ -203,3 +203,85 @@ def send_telegram(message: str) -> bool:
     except Exception as e:
         print(f"[Telegram] Lỗi: {e}")
         return False
+
+def build_smart_alert(a, alert_type: str, timestamp: str,
+                      prev_resistance: float = 0, prev_support: float = 0) -> str:
+    """
+    Alert thông minh — chỉ gửi khi giá chạm/phá key level.
+    Phân tích hướng đi ngắn hạn dựa trên price action tại level đó.
+    """
+    price = a.price
+
+    # Xác định level bị tác động
+    if prev_resistance > 0 and abs(price - prev_resistance) / prev_resistance < 0.02:
+        level_type = "RESISTANCE"
+        level_price = prev_resistance
+        level_note = f"Giá đang TEST kháng cự ${prev_resistance:,.0f}"
+    elif prev_resistance > 0 and price > prev_resistance * 1.01:
+        level_type = "BREAKOUT"
+        level_price = prev_resistance
+        level_note = f"Giá ĐÃ PHÁ kháng cự ${prev_resistance:,.0f} ✅"
+    elif prev_support > 0 and abs(price - prev_support) / prev_support < 0.02:
+        level_type = "SUPPORT_TEST"
+        level_price = prev_support
+        level_note = f"Giá đang TEST hỗ trợ ${prev_support:,.0f}"
+    elif prev_support > 0 and price < prev_support * 0.99:
+        level_type = "BREAKDOWN"
+        level_price = prev_support
+        level_note = f"Giá ĐÃ MẤT hỗ trợ ${prev_support:,.0f} ⚠️"
+    else:
+        level_type = "MOVE"
+        level_note = f"Biến động {'mạnh' if abs(a.change_24h) > 5 else 'đáng chú ý'}"
+
+    # Phân tích ngắn hạn theo từng loại event
+    if level_type == "BREAKOUT":
+        short_view = (
+            f"Break ${level_price:,.0f} với {'volume tốt' if a.volume_24h > 0 else 'cần xác nhận volume'}. "
+            f"Nếu giữ trên level này → upside tiếp. "
+            f"Mục tiêu gần: ${level_price * 1.05:,.0f}–${level_price * 1.08:,.0f}."
+        )
+        header_emoji = "🚀"
+    elif level_type == "BREAKDOWN":
+        short_view = (
+            f"Mất ${level_price:,.0f} là tín hiệu xấu. "
+            f"Phe bán đang kiểm soát. "
+            f"Vùng hỗ trợ tiếp theo cần chú ý: ${level_price * 0.93:,.0f}–${level_price * 0.96:,.0f}."
+        )
+        header_emoji = "🔴"
+    elif level_type == "RESISTANCE":
+        short_view = (
+            f"Giá đang tiếp cận kháng cự ${level_price:,.0f}. "
+            f"Phản ứng tại đây quyết định nhịp tiếp theo. "
+            f"Rejection → giảm về ${level_price * 0.95:,.0f}. Break → tăng về ${level_price * 1.05:,.0f}."
+        )
+        header_emoji = "⚡"
+    elif level_type == "SUPPORT_TEST":
+        short_view = (
+            f"Giá đang test hỗ trợ ${level_price:,.0f}. "
+            f"Giữ được + nến đảo chiều → cơ hội DCA. "
+            f"Mất level này → tiếp tục giảm về ${level_price * 0.93:,.0f}."
+        )
+        header_emoji = "⚠️"
+    else:
+        short_view = (
+            f"Giá đang {a.change_24h:+.1f}% 24H. "
+            f"Trend hiện tại: {a.trend_structure}. "
+            f"{'Ưu tiên chờ vùng support' if a.change_24h < 0 else 'Momentum tích cực nhưng cần xác nhận'}."
+        )
+        header_emoji = "📊"
+
+    dump_pct = abs(a.change_24h)
+    msg = f"""
+{header_emoji} <b>BTC ALERT — {level_note}</b>
+🕐 {timestamp}
+
+💰 Giá: {fmt_price(price)} ({fmt_pct(a.change_24h)} 24H)
+📐 Trend: {a.trend_structure} | Cycle: {a.cycle_phase}
+😨 Fear & Greed: {a.fear_greed} ({a.fear_greed_label})
+🟡 Khuyến nghị: <b>{a.recommendation}</b>
+
+⚡ <b>Góc nhìn ngắn hạn:</b>
+{short_view}
+""".strip()
+    return msg
+

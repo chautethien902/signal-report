@@ -58,6 +58,12 @@ def run_btc_report():
         message  = btc_report.build_daily_report(analysis, raw["timestamp"])
         btc_report.send_telegram(message)
         db.save_btc_report(analysis)
+        # Lưu key levels để smart alert dùng
+        db.save_btc_key_levels(
+            price      = analysis.price,
+            resistance = analysis.dca_zone_high or analysis.price * 1.05,
+            support    = analysis.dca_zone_low  or analysis.ma50w or analysis.price * 0.92,
+        )
         print(f"[BTC] ✅ Score={analysis.overall_score}/100 | {analysis.recommendation}")
     except Exception as e:
         print(f"[BTC] ❌ Lỗi: {e}")
@@ -65,22 +71,61 @@ def run_btc_report():
 
 
 def run_btc_alert_check():
-    """Check pump/dump bất thường."""
+    """
+    Smart alert: chỉ gửi khi giá chạm/phá key level từ lần phân tích trước.
+    Fallback về pump/dump % nếu không có key levels.
+    """
     try:
         raw      = btc_fetch.fetch_all_btc_data()
         analysis = btc_analyze.run_analysis(raw)
         change   = analysis.change_24h
+        price    = analysis.price
+        ts       = raw["timestamp"]
 
-        if change <= BTC_DROP_ALERT_PCT:
-            print(f"[BTC Alert] 🚨 Dump {change:.1f}%")
-            msg = btc_report.build_alert_message(analysis, "DUMP", raw["timestamp"])
-            btc_report.send_telegram(msg)
-        elif change >= BTC_PUMP_ALERT_PCT:
-            print(f"[BTC Alert] 🚀 Pump {change:.1f}%")
-            msg = btc_report.build_alert_message(analysis, "PUMP", raw["timestamp"])
+        # Lấy key levels từ lần phân tích trước
+        prev_levels = db.get_last_btc_key_levels()
+        prev_res = prev_levels["resistance"] if prev_levels else 0
+        prev_sup = prev_levels["support"]    if prev_levels else 0
+
+        should_alert = False
+        alert_reason = ""
+
+        if prev_res > 0 or prev_sup > 0:
+            # Smart check: giá chạm/phá level
+            near_resistance = prev_res > 0 and abs(price - prev_res) / prev_res < 0.015
+            broke_resistance = prev_res > 0 and price > prev_res * 1.01
+            near_support    = prev_sup > 0 and abs(price - prev_sup) / prev_sup < 0.015
+            broke_support   = prev_sup > 0 and price < prev_sup * 0.99
+
+            if broke_resistance:
+                should_alert = True
+                alert_reason = f"BREAKOUT kháng cự ${prev_res:,.0f}"
+            elif near_resistance:
+                should_alert = True
+                alert_reason = f"TEST kháng cự ${prev_res:,.0f}"
+            elif broke_support:
+                should_alert = True
+                alert_reason = f"BREAKDOWN hỗ trợ ${prev_sup:,.0f}"
+            elif near_support:
+                should_alert = True
+                alert_reason = f"TEST hỗ trợ ${prev_sup:,.0f}"
+        else:
+            # Fallback: dùng % thay đổi nếu chưa có key levels
+            if change <= BTC_DROP_ALERT_PCT:
+                should_alert = True
+                alert_reason = f"Dump {change:.1f}%"
+            elif change >= BTC_PUMP_ALERT_PCT:
+                should_alert = True
+                alert_reason = f"Pump +{change:.1f}%"
+
+        if should_alert:
+            print(f"[BTC Alert] ⚡ {alert_reason}")
+            msg = btc_report.build_smart_alert(analysis, "MOVE", ts, prev_res, prev_sup)
             btc_report.send_telegram(msg)
         else:
-            print(f"[BTC Alert] OK — 24H: {change:+.2f}%")
+            print(f"[BTC Alert] OK — Price: ${price:,.0f} | 24H: {change:+.2f}%"
+                  + (f" | Res: ${prev_res:,.0f} | Sup: ${prev_sup:,.0f}" if prev_res else ""))
+
     except Exception as e:
         print(f"[BTC Alert] ❌ Lỗi: {e}")
 
@@ -142,8 +187,11 @@ def run_alt_scan(dry_run: bool = False):
                 if s.total_score >= ALT_SCORE_THRESHOLD
             ]
 
-        # 8. Lưu DB
+        # 8. Lưu DB + cleanup cũ
         db.save_alt_scan(ts, len(coins), len(filtered), results)
+        db.cleanup_old_scans(keep_last_n=2)   # chỉ giữ 2 scan gần nhất
+        stats = db.get_db_stats()
+        print(f"[DB] Stats: {stats}")
 
         # 9. Gửi Telegram
         alt_report.send_full_report(results, ts, len(coins))
