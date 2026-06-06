@@ -119,9 +119,55 @@ def run_btc_alert_check():
                 alert_reason = f"Pump +{change:.1f}%"
 
         if should_alert:
-            print(f"[BTC Alert] ⚡ {alert_reason}")
-            msg = btc_report.build_smart_alert(analysis, "MOVE", ts, prev_res, prev_sup)
-            btc_report.send_telegram(msg)
+            # ── Dedup: kiểm tra đã báo event này chưa ────────
+            last_alert   = db.get_last_btc_alert()
+            already_sent = False
+
+            if last_alert:
+                last_type  = last_alert.get("level_type") or last_alert.get("alert_type", "")
+                last_level = float(last_alert.get("level_price") or 0)
+                last_price = float(last_alert.get("btc_price")   or 0)
+
+                # Xác định level_type hiện tại
+                if prev_res > 0 and price > prev_res * 1.01:
+                    cur_type = "BREAKOUT"
+                    cur_level = prev_res
+                elif prev_res > 0 and abs(price - prev_res) / prev_res < 0.015:
+                    cur_type = "RESISTANCE"
+                    cur_level = prev_res
+                elif prev_sup > 0 and price < prev_sup * 0.99:
+                    cur_type = "BREAKDOWN"
+                    cur_level = prev_sup
+                elif prev_sup > 0 and abs(price - prev_sup) / prev_sup < 0.015:
+                    cur_type = "SUPPORT_TEST"
+                    cur_level = prev_sup
+                else:
+                    cur_type  = "MOVE"
+                    cur_level = price
+
+                # Cùng level_type + cùng level_price → đã báo rồi
+                same_event = (
+                    last_type  == cur_type and
+                    abs(last_level - cur_level) < cur_level * 0.005
+                )
+                # Giá thay đổi < 3% từ lần báo trước → không đáng báo lại
+                price_barely_moved = (
+                    last_price > 0 and
+                    abs(price - last_price) / last_price < 0.03
+                )
+                # Bỏ qua chỉ khi: cùng event VÀ giá chưa di chuyển đáng kể
+                # Nếu giá đã di chuyển > 3% thì vẫn gửi dù cùng level type
+                already_sent = same_event and price_barely_moved
+
+            if not already_sent:
+                print(f"[BTC Alert] ⚡ {alert_reason} → gửi alert")
+                msg = btc_report.build_smart_alert(analysis, "MOVE", ts, prev_res, prev_sup)
+                btc_report.send_telegram(msg)
+                db.save_btc_alert("MOVE", cur_type if should_alert else "MOVE",
+                                  cur_level if should_alert else price, price)
+            else:
+                print(f"[BTC Alert] ⏭  Bỏ qua — đã báo event này rồi "
+                      f"(last: {last_type} @ ${last_level:,.0f}, price move: {abs(price - last_price)/last_price*100:.1f}%)")
         else:
             print(f"[BTC Alert] OK — Price: ${price:,.0f} | 24H: {change:+.2f}%"
                   + (f" | Res: ${prev_res:,.0f} | Sup: ${prev_sup:,.0f}" if prev_res else ""))

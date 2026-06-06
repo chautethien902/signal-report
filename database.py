@@ -643,3 +643,104 @@ def get_last_btc_key_levels() -> dict:
     except:
         conn.close()
         return None
+
+# ════════════════════════════════════════════════════════════
+#  ALERT STATE — tránh spam cùng 1 event
+# ════════════════════════════════════════════════════════════
+
+def get_last_btc_alert() -> dict:
+    """
+    Lấy alert BTC gần nhất đã gửi.
+    Dùng để check xem event này đã báo chưa.
+    """
+    conn = get_conn()
+    c    = conn.cursor()
+    try:
+        if USE_POSTGRES:
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS btc_alert_log (
+                    id          SERIAL PRIMARY KEY,
+                    alert_type  TEXT,
+                    level_type  TEXT,
+                    level_price DOUBLE PRECISION,
+                    btc_price   DOUBLE PRECISION,
+                    created_at  TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
+            c.execute("""
+                SELECT * FROM btc_alert_log
+                ORDER BY created_at DESC LIMIT 1
+            """)
+        else:
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS btc_alert_log (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    alert_type  TEXT,
+                    level_type  TEXT,
+                    level_price REAL,
+                    btc_price   REAL,
+                    created_at  TEXT DEFAULT (datetime('now'))
+                )
+            """)
+            c.execute("""
+                SELECT * FROM btc_alert_log
+                ORDER BY created_at DESC LIMIT 1
+            """)
+        conn.commit()
+        row = c.fetchone()
+        conn.close()
+        return _one_to_dict(row)
+    except Exception as e:
+        print(f"[DB] get_last_btc_alert: {e}")
+        conn.close()
+        return None
+
+
+def save_btc_alert(alert_type: str, level_type: str,
+                   level_price: float, btc_price: float):
+    """Lưu alert vừa gửi để tránh duplicate."""
+    conn = get_conn()
+    c    = conn.cursor()
+    try:
+        if USE_POSTGRES:
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS btc_alert_log (
+                    id SERIAL PRIMARY KEY, alert_type TEXT,
+                    level_type TEXT, level_price DOUBLE PRECISION,
+                    btc_price DOUBLE PRECISION,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
+            c.execute("""
+                INSERT INTO btc_alert_log (alert_type, level_type, level_price, btc_price)
+                VALUES (%s,%s,%s,%s)
+            """, (alert_type, level_type, level_price, btc_price))
+            # Chỉ giữ 50 record gần nhất
+            c.execute("""
+                DELETE FROM btc_alert_log
+                WHERE id NOT IN (
+                    SELECT id FROM btc_alert_log ORDER BY created_at DESC LIMIT 50
+                )
+            """)
+        else:
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS btc_alert_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, alert_type TEXT,
+                    level_type TEXT, level_price REAL, btc_price REAL,
+                    created_at TEXT DEFAULT (datetime('now'))
+                )
+            """)
+            c.execute("""
+                INSERT INTO btc_alert_log (alert_type, level_type, level_price, btc_price)
+                VALUES (?,?,?,?)
+            """, (alert_type, level_type, level_price, btc_price))
+            c.execute("""
+                DELETE FROM btc_alert_log WHERE id NOT IN (
+                    SELECT id FROM btc_alert_log ORDER BY created_at DESC LIMIT 50
+                )
+            """)
+        conn.commit()
+    except Exception as e:
+        print(f"[DB] save_btc_alert: {e}")
+    finally:
+        conn.close()
