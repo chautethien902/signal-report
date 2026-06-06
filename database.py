@@ -381,7 +381,36 @@ def save_alt_scan(timestamp: str, total_scanned: int, total_filtered: int, resul
         sc = r["scored_coin"]
         an = r["analysis"]
         coin = sc.coin
+        # Parse tất cả fields — hỗ trợ cả GPT format lẫn fallback format
         upside = an.get("upside", {})
+        targets = an.get("targets", {})
+
+        # upside_conservative: GPT dùng upside.conservative, fallback dùng targets.t1
+        upside_cons = (
+            upside.get("conservative") or
+            upside.get("bull_case") or
+            targets.get("t1") or
+            an.get("upside_conservative") or ""
+        )
+        # upside_bull: GPT dùng upside.bull_case, fallback dùng targets.t2
+        upside_bull = (
+            upside.get("bull_case") or
+            targets.get("t2") or
+            an.get("upside_bull") or ""
+        )
+        # scenario_bullish
+        scenario_bull = (
+            an.get("scenario_bullish") or
+            upside_cons or ""
+        )
+        # entry_condition: ưu tiên entry_condition, fallback dca_note
+        entry_cond = (
+            an.get("entry_condition") or
+            an.get("dca_note") or
+            an.get("short_term_view") or ""
+        )
+        # dca_note
+        dca = an.get("dca_note") or entry_cond or ""
 
         vals = (
             scan_id, timestamp,
@@ -402,11 +431,11 @@ def save_alt_scan(timestamp: str, total_scanned: int, total_filtered: int, resul
             json.dumps(an.get("catalyst", [])),
             json.dumps(an.get("risks", [])),
             an.get("invalidation", ""),
-            upside.get("conservative", ""),
-            upside.get("bull_case", ""),
-            an.get("dca_note", ""),
-            an.get("scenario_bullish", "") or an.get("upside", {}).get("bull_case", ""),
-            an.get("entry_condition", "") or an.get("dca_note", ""),
+            upside_cons,
+            upside_bull,
+            dca,
+            scenario_bull,
+            entry_cond,
         )
         c.execute(result_sql_pg if USE_POSTGRES else result_sql_sqlite, vals)
         c.execute(hist_sql_pg if USE_POSTGRES else hist_sql_sqlite, (
