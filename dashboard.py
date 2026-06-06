@@ -261,13 +261,42 @@ elif page == "🔍 Alt Signals":
             try: risks = json.loads(risks)
             except: risks = []
 
-        # Build entry/DCA text
-        dca_note    = coin.get("dca_note") or ""
-        upside_cons = coin.get("upside_conservative") or ""
-        upside_bull = coin.get("upside_bull") or ""
+        # Core fields
+        dca_note     = coin.get("dca_note") or ""
+        upside_cons  = coin.get("upside_conservative") or ""
+        upside_bull  = coin.get("upside_bull") or ""
         invalidation = coin.get("invalidation") or ""
 
-        # Tính % change color
+        # Scenario bullish — ưu tiên DB column mới, fallback về upside_bull
+        scenario_bull_text = (
+            coin.get("scenario_bullish") or
+            upside_cons or
+            (f"Target: {upside_cons}" if upside_cons else None) or
+            "—"
+        )
+
+        # Entry condition — ưu tiên DB column mới, fallback về dca_note
+        entry_text = (
+            coin.get("entry_condition") or
+            dca_note or
+            "—"
+        )
+
+        # Risk text
+        risk_text = "<br>".join(f"• {r}" for r in risks[:3]) if risks else "—"
+
+        # Thesis
+        thesis_text = coin.get("thesis") or "—"
+
+        # Target line
+        target_line = (
+            f'<div style="margin-top:6px;font-size:12px;color:#8b949e">'
+            f'🎯 Target: <b style="color:#3fb950">{upside_cons}</b>'
+            + (f' → bull case <b style="color:#3fb950">{upside_bull}</b>' if upside_bull else "")
+            + "</div>"
+        ) if upside_cons else ""
+
+        # % change color
         c7d  = coin.get("change_7d",  0) or 0
         c24h = coin.get("change_24h", 0) or 0
         mc   = coin.get("market_cap", 0) or 0
@@ -323,20 +352,20 @@ elif page == "🔍 Alt Signals":
               <div style="color:#3fb950;font-weight:600;margin-bottom:6px">
                 🟢 Kịch bản tăng
               </div>
-              {upside_cons or "—"}
+              {scenario_bull_text}
             </div>
             <div class="scenario-box">
               <div style="color:#f85149;font-weight:600;margin-bottom:6px">
                 🔴 Kịch bản giảm / Rủi ro
               </div>
-              {'<br>'.join(f"• {r}" for r in risks[:3]) if risks else "—"}
+              {risk_text}
             </div>
           </div>
 
           <!-- Góc nhìn ngắn hạn (thesis) -->
           <div style="font-size:13px;color:#c9d1d9;margin-bottom:10px">
             <span style="color:#8b949e">⚡ Góc nhìn: </span>
-            {coin.get("thesis","—")}
+            {thesis_text}
           </div>
 
           <!-- Invalidation -->
@@ -350,9 +379,9 @@ elif page == "🔍 Alt Signals":
               📍 Entry / DCA
             </div>
             <div style="font-size:13px;color:#c9d1d9">
-              {dca_note or "—"}
+              {entry_text}
             </div>
-            {f'<div style="margin-top:6px;font-size:12px;color:#8b949e">🎯 Target: <b style="color:#3fb950">{upside_cons}</b> → bull case <b style="color:#3fb950">{upside_bull}</b></div>' if upside_cons else ""}
+            {target_line}
           </div>
 
         </div>
