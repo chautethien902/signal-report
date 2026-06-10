@@ -239,7 +239,7 @@ def init_db():
     _execute_many(c, statements)
     conn.commit()
     conn.close()
-    # Migration: thêm cột mới nếu chưa có (tương thích DB cũ)
+    # Migration: thêm cột mới nếu chưa có
     try:
         conn2 = get_conn()
         c2 = conn2.cursor()
@@ -254,7 +254,6 @@ def init_db():
                     c2.execute(f"ALTER TABLE alt_results ADD COLUMN {col} {col_type}")
         conn2.commit()
         conn2.close()
-        print("[DB] Migration OK")
     except Exception as e:
         print(f"[DB Migration] {e}")
 
@@ -382,34 +381,15 @@ def save_alt_scan(timestamp: str, total_scanned: int, total_filtered: int, resul
         an = r["analysis"]
         coin = sc.coin
         # Parse tất cả fields — hỗ trợ cả GPT format lẫn fallback format
-        upside = an.get("upside", {})
+        upside  = an.get("upside", {})
         targets = an.get("targets", {})
-
-        # upside_conservative: GPT dùng upside.conservative, fallback dùng targets.t1
-        upside_cons = (
-            upside.get("conservative") or
-            upside.get("bull_case") or
-            targets.get("t1") or
-            an.get("upside_conservative") or ""
-        )
-        # upside_bull: GPT dùng upside.bull_case, fallback dùng targets.t2
-        upside_bull = (
-            upside.get("bull_case") or
-            targets.get("t2") or
-            an.get("upside_bull") or ""
-        )
-        # scenario_bullish
-        scenario_bull = (
-            an.get("scenario_bullish") or
-            upside_cons or ""
-        )
-        # entry_condition: ưu tiên entry_condition, fallback dca_note
-        entry_cond = (
-            an.get("entry_condition") or
-            an.get("dca_note") or
-            an.get("short_term_view") or ""
-        )
-        # dca_note
+        upside_cons = (upside.get("conservative") or upside.get("bull_case") or
+                       targets.get("t1") or an.get("upside_conservative") or "")
+        upside_bull = (upside.get("bull_case") or targets.get("t2") or
+                       an.get("upside_bull") or "")
+        scenario_bull = an.get("scenario_bullish") or upside_cons or ""
+        entry_cond    = (an.get("entry_condition") or an.get("dca_note") or
+                         an.get("short_term_view") or "")
         dca = an.get("dca_note") or entry_cond or ""
 
         vals = (
@@ -644,49 +624,29 @@ def get_last_btc_key_levels() -> dict:
         conn.close()
         return None
 
-# ════════════════════════════════════════════════════════════
-#  ALERT STATE — tránh spam cùng 1 event
-# ════════════════════════════════════════════════════════════
-
 def get_last_btc_alert() -> dict:
-    """
-    Lấy alert BTC gần nhất đã gửi.
-    Dùng để check xem event này đã báo chưa.
-    """
+    """Lấy alert BTC gần nhất đã gửi — dùng để dedup."""
     conn = get_conn()
     c    = conn.cursor()
     try:
         if USE_POSTGRES:
             c.execute("""
                 CREATE TABLE IF NOT EXISTS btc_alert_log (
-                    id          SERIAL PRIMARY KEY,
-                    alert_type  TEXT,
-                    level_type  TEXT,
-                    level_price DOUBLE PRECISION,
-                    btc_price   DOUBLE PRECISION,
-                    created_at  TIMESTAMPTZ DEFAULT NOW()
+                    id SERIAL PRIMARY KEY, alert_type TEXT, level_type TEXT,
+                    level_price DOUBLE PRECISION, btc_price DOUBLE PRECISION,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
                 )
-            """)
-            c.execute("""
-                SELECT * FROM btc_alert_log
-                ORDER BY created_at DESC LIMIT 1
             """)
         else:
             c.execute("""
                 CREATE TABLE IF NOT EXISTS btc_alert_log (
-                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                    alert_type  TEXT,
-                    level_type  TEXT,
-                    level_price REAL,
-                    btc_price   REAL,
-                    created_at  TEXT DEFAULT (datetime('now'))
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, alert_type TEXT,
+                    level_type TEXT, level_price REAL, btc_price REAL,
+                    created_at TEXT DEFAULT (datetime('now'))
                 )
             """)
-            c.execute("""
-                SELECT * FROM btc_alert_log
-                ORDER BY created_at DESC LIMIT 1
-            """)
         conn.commit()
+        c.execute("SELECT * FROM btc_alert_log ORDER BY created_at DESC LIMIT 1")
         row = c.fetchone()
         conn.close()
         return _one_to_dict(row)
@@ -698,27 +658,24 @@ def get_last_btc_alert() -> dict:
 
 def save_btc_alert(alert_type: str, level_type: str,
                    level_price: float, btc_price: float):
-    """Lưu alert vừa gửi để tránh duplicate."""
+    """Lưu alert vừa gửi để tránh spam."""
     conn = get_conn()
     c    = conn.cursor()
     try:
         if USE_POSTGRES:
             c.execute("""
                 CREATE TABLE IF NOT EXISTS btc_alert_log (
-                    id SERIAL PRIMARY KEY, alert_type TEXT,
-                    level_type TEXT, level_price DOUBLE PRECISION,
-                    btc_price DOUBLE PRECISION,
+                    id SERIAL PRIMARY KEY, alert_type TEXT, level_type TEXT,
+                    level_price DOUBLE PRECISION, btc_price DOUBLE PRECISION,
                     created_at TIMESTAMPTZ DEFAULT NOW()
                 )
             """)
+            c.execute(
+                "INSERT INTO btc_alert_log (alert_type,level_type,level_price,btc_price) VALUES (%s,%s,%s,%s)",
+                (alert_type, level_type, level_price, btc_price)
+            )
             c.execute("""
-                INSERT INTO btc_alert_log (alert_type, level_type, level_price, btc_price)
-                VALUES (%s,%s,%s,%s)
-            """, (alert_type, level_type, level_price, btc_price))
-            # Chỉ giữ 50 record gần nhất
-            c.execute("""
-                DELETE FROM btc_alert_log
-                WHERE id NOT IN (
+                DELETE FROM btc_alert_log WHERE id NOT IN (
                     SELECT id FROM btc_alert_log ORDER BY created_at DESC LIMIT 50
                 )
             """)
@@ -730,10 +687,10 @@ def save_btc_alert(alert_type: str, level_type: str,
                     created_at TEXT DEFAULT (datetime('now'))
                 )
             """)
-            c.execute("""
-                INSERT INTO btc_alert_log (alert_type, level_type, level_price, btc_price)
-                VALUES (?,?,?,?)
-            """, (alert_type, level_type, level_price, btc_price))
+            c.execute(
+                "INSERT INTO btc_alert_log (alert_type,level_type,level_price,btc_price) VALUES (?,?,?,?)",
+                (alert_type, level_type, level_price, btc_price)
+            )
             c.execute("""
                 DELETE FROM btc_alert_log WHERE id NOT IN (
                     SELECT id FROM btc_alert_log ORDER BY created_at DESC LIMIT 50
